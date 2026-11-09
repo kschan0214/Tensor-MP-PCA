@@ -41,33 +41,30 @@ SNR_gain: an estimate of the estimated gain in signal-to-noise ratio.
 
 ## Batched implementation (fork addition)
 
-`denoise_mppca_batched.m` is a vectorised implementation of the **matrix case** of `denoise_recursive_tensor`: 4D data `[x y z Nmeas]` with the default options (indices `{1:3, 4}`, optimal shrinkage, stride 1, overlapping patches averaged). The original loops over patches with one SVD each; this version stacks the patches as pages and decomposes them with MATLAB's `pagesvd`, which is multithreaded across pages. The algorithm is unchanged:
-- Marchenko–Pastur noise estimate;
-- component cut-off;
-- optimal Frobenius shrinkage;
-- patch averaging.
+`denoise_recursive_tensor_batched.m` is a batched (vectorised) version of `denoise_recursive_tensor` with **the same inputs, options and outputs**. The original loops over sliding-window patches with one SVD each. This version processes all patches of a batch together, as pages of MATLAB's `pagesvd`, which is multithreaded across pages.
+
+In the tensor case the number of retained components P differs between patches. Patches are therefore zero-padded to full rank, and each patch's true matrix sizes are tracked, so the Marchenko–Pastur cut-offs, combined noise estimate and optimal shrinkage are exactly those of the original.
 
 ```matlab
-[denoised, Sigma2, P, SNR_gain, info] = denoise_mppca_batched(data, [5 5 5], 'precision', 'double');
-% options: 'mask' (skip windows with no mask voxel), 'batch' (patches per batch, default 20000),
-%          'precision' ('double' default, or 'single')
+[denoised, Sigma2, P, SNR_gain, info] = denoise_recursive_tensor_batched(data, window, varargin)
+% same options as denoise_recursive_tensor: indices, mask, stride, center_assign, opt_shrink,
+% sigma2 (known noise), full_sigma2_pass, num_inds
+% extra options: 'batch' (patches per batch, default 20000), 'precision' ('double' default | 'single')
 ```
 
-**Validation** against `denoise_recursive_tensor(data,[5 5 5])`:
-- in vivo diffusion MRI, real-valued (phase-corrected) DWI at 3T (Cima.X);
-- 12-slice slab, 10 acquisitions × 2 echo times (5–105 volumes each);
-- MATLAB R2024b, 40 threads.
+**Parity with the original:** every option was compared on synthetic low-rank data, 17 cases including 4D and 5D data, all `indices` groupings, mask, center_assign, stride, known sigma, opt_shrink off, full_sigma2_pass off and num_inds. The denoised data agree within 3e-13 of the noise SD; P and Sigma2 are identical to rounding.
 
-| Version | Time | Max difference | σ and SNR gain |
-| --- | --- | --- | --- |
-| `denoise_recursive_tensor` | 1112 s | reference | reference |
-| `denoise_mppca_batched`, double | 55 s (20×) | 1.9e-13 σ | identical to machine precision |
-| `denoise_mppca_batched`, single | 35 s (32×) | 0.02 σ (RMS 3e-5 σ) | max relative σ difference 7e-5 |
+**Real data (MATLAB R2024b, 40 threads):**
 
-A full volume of 110×110×75×105 takes about 70 s in single precision (about 40 s with a head mask).
+| Data | Case | Original | Batched | Max difference |
+| --- | --- | --- | --- | --- |
+| DWI, real-valued, 3T, 12 slices, 10 acquisitions × 2 TE | matrix `[vox × volumes]` | 1026 s | 54 s (19×) | 1.9e-13 σ |
+| multi-echo GRE (15 echoes × 3 flip angles), 12 slices, real part | tensor `{vox, echo, FA}` | 187 s | 7 s (27×) | 1.4e-13 σ |
 
-**Limitations:**
-- Only the matrix case is batched; tensors with three or more indices still use `denoise_recursive_tensor`.
-- CPU only: MATLAB's `gpuArray` `pagesvd` accepts at most 32×32 pages.
+**Notes:**
+- `'subtract_mean', true` is not batched; it falls back to `denoise_recursive_tensor`, with a warning.
+- With `'num_inds'` smaller than the number of indices, the original's `SNR_gain` line errors because P has fewer columns than the patch size vector. The batched version counts the indices it does not denoise as full rank in that formula.
+- It is CPU only: MATLAB's `gpuArray` `pagesvd` accepts at most 32×32 pages.
+- `denoise_mppca_batched.m` is the earlier matrix-only version, kept for compatibility.
 
-Please cite Olesen et al., Magn Reson Med 2022 (doi:10.1002/mrm.29478) when using either function.
+Please cite Olesen et al., Magn Reson Med 2022 (doi:10.1002/mrm.29478) when using these functions.
